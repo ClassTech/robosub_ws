@@ -1,0 +1,39 @@
+# ROS2 / colcon build artifacts
+build/
+install/
+log/
+.colcon_workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+.eggs/
+dist/
+*.so
+.pytest_cache/
+
+# ROS logs
+~/.ros/
+*.ros/
+
+# Docker
+.docker/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# npm (stray file in workspace root)
+npm-debug.log*
+node_modules/

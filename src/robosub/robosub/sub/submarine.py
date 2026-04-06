@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""
+Contains the Submarine class — the brain of the control stack.
+
+Manages the mission plan, PID controllers, and all control helper methods.
+No pygame, no ROS — pure Python/numpy. Receives a SensorSuite each tick,
+returns ThrusterCommands.
+"""
+import math
+import numpy as np
+from typing import Tuple, List, Optional
+
+from robosub.sub.data_structures import ThrusterCommands, SensorSuite, Vision
+from robosub.sub.config import SimulationConfig
+from robosub.sub.utils import angle_diff
+from robosub.sub.tasks.task_base import Task, TaskStatus
+
+
+class Submarine:
+    def __init__(self, mission_plan: List[Task]):
+
+        # --- Horizontal gains ---
+        self.ALIGN_YAW_P_GAIN       = 0.4
+        self.YAW_D_GAIN             = 2.0
+        self.HOVER_YAW_P_GAIN       = 0.15
+        self.DAMPING_GAIN           = 1.5
+        self.MANEUVER_DAMPING_GAIN  = 3.0
+
+        # --- Vertical (depth/pitch) gains ---
+        self.DEPTH_P_GAIN  = 2.5
+        self.DEPTH_I_GAIN  = 0.15   # slow wind-up to avoid integral overshoot
+        self.DEPTH_D_GAIN  = 4.0    # strong damping on velocity
+        self.PITCH_P_GAIN  = 0.8
+        self.PITCH_D_GAIN  = 1.0
+
+        # --- Depth integrator ---
+        self.integral_z_err    = 0.0
+        # Clamp = buoyancy_offset / I_GAIN = 0.6 / 0.15 = 4.0
+        # Keeps steady-state integral just large enough to hold against buoyancy
+        # without having excess that causes overshoot.
+        self.integral_clamp_z  = 4.0
+
+        self.MIN_PIXELS_FOR_DETECTION = 20
+
+        self.mission_plan = mission_plan
+        self.config       = SimulationConfig()
+
+        self._latest_sensors: Optional[SensorSuite] = None
+
+        self.vision = Vision(
+            image_provider=lambda: (self._latest_sensors.camera_image
+                                    if self._latest_sensors else None),
+            min_pole_pixels=self.MIN_PIXELS_FOR_DETECTION,
+            min_gate_pixels=50
+        )
+
+        self.reset()
+
+    def reset(self):
+        self.current_task_index = 0
+        for task in self.mission_plan:
+            task.reset()
+
+        self.target_heading = 0.0
+        self.target_depth   = 0.0
+        self.target_pitch   = 0.0
+        self.integral_z_err = 0.0
+
+        self._latest_sensors = None
+
+    def update(self, dt: float, sensors: SensorSuite) -> Tuple[ThrusterCommands, Vision]:
+
+        self._latest_sensors = sensors
+
+        if self.current_task_index >= len(self.mission_plan):
+            return ThrusterCommands(), self.vision
+
+        current_task = self.mission_plan[self.current_task_index]
+        self.target_depth = getattr(current_task, 'target_depth', self.target_depth)
+        self.vision.update()
+
+        # Update depth integrator
+        depth_error = self.target_depth - sensors.depth
+        self.integral_z_err = np.clip(
+            self.integral_z_err + depth_error * dt,
+            -self.integral_clamp_z,
+            self.integral_clamp_z
+        )
+
+        status, commands = current_task.execute(
+            self, dt, sensors, self.vision, self.config
+        )
+
+        if status == TaskStatus.COMPLETED:
+            if self.current_task_index >= len(self.mission_plan) - 1:
+                print("INFO: Final mission task completed.")
+                self.current_task_index += 1
+                return commands, self.vision
+            else:
+                self.current_task_index += 1
+                next_task = self.mission_plan[self.current_task_index]
+                next_depth = getattr(next_task, 'target_depth', self.target_depth)
+                # Only reset the depth integrator when the target depth changes
+                # meaningfully — carrying it over lets the sub hold depth
+                # immediately on the next task instead of drifting up while
+                # the integrator rebuilds from zero.
+                if abs(next_depth - self.target_depth) > 0.2:
+                    self.integral_z_err = 0.0
+                self.target_depth = next_depth
+
+                if hasattr(next_task, 'on_enter'):
+                    next_task.on_enter(self, sensors, self.vision,
+                                       next_task.context)
+                    if (hasattr(next_task, 'subtasks') and next_task.subtasks):
+                        if next_task.current_subtask_index < len(next_task.subtasks):
+                            next_task.subtasks[
+                                next_task.current_subtask_index
+                            ]._has_entered = True
+
+                return ThrusterCommands(), self.vision
+
+        elif status == TaskStatus.FAILED:
+            print(f"ERROR: Task {current_task.__class__.__name__} FAILED.")
+            self.current_task_index = len(self.mission_plan)
+            return self._get_damping_commands(sensors), self.vision
+
+        return commands, self.vision
+
+    # --- Status helpers ---
+
+    def get_current_task_name(self) -> str:
+        if self.current_task_index < len(self.mission_plan):
+            return self.mission_plan[self.current_task_index].__class__.__name__
+        return "MISSION_COMPLETE"
+
+    def get_current_state_name(self) -> str:
+        if self.current_task_index < len(self.mission_plan):
+            return self.mission_plan[self.current_task_index].state_name
+        return ""
+
+    # --- Control helpers ---
+
+    def get_depth_pitch_commands(self,
+                                 sensors: SensorSuite,
+                                 target_depth: float,
+                                 target_pitch: float = 0.0
+                                 ) -> Tuple[float, float]:
+        """
+        PID depth control + PD pitch control.
+        Returns (heave_command, pitch_command), each clipped to [-1, 1].
+        """
+        depth_error = target_depth - sensors.depth
+        heave = np.clip(
+            depth_error          * self.DEPTH_P_GAIN
+            + self.integral_z_err * self.DEPTH_I_GAIN
+            - sensors.velocity_z  * self.DEPTH_D_GAIN,
+            -1.0, 1.0
+        )
+
+        pitch_error = angle_diff(target_pitch, sensors.pitch)
+        pitch = np.clip(
+            pitch_error           * self.PITCH_P_GAIN
+            - sensors.imu.gyro_y  * self.PITCH_D_GAIN,
+            -1.0, 1.0
+        )
+
+        return heave, pitch
+
+    def _get_damping_commands(self, sensors: SensorSuite) -> ThrusterCommands:
+        """Damps all 6 axes of motion, holds current depth."""
+        h_rad  = math.radians(sensors.heading)
+        cos_h, sin_h = math.cos(h_rad), math.sin(h_rad)
+
+        # World-frame damping → body frame
+        surge = (-sensors.velocity_x * cos_h
+                 - sensors.velocity_y * sin_h) * self.DAMPING_GAIN
+        sway  = ( sensors.velocity_x * sin_h
+                 - sensors.velocity_y * cos_h) * self.DAMPING_GAIN
+
+        yaw   = -sensors.imu.gyro_z * self.YAW_D_GAIN
+        heave, pitch = self.get_depth_pitch_commands(sensors, sensors.depth)
+
+        return self._mix_and_normalize_commands(surge, sway, yaw, heave, pitch)
+
+    def get_spin_damping_commands(self,
+                                  sensors: SensorSuite,
+                                  target_depth: Optional[float] = None
+                                  ) -> ThrusterCommands:
+        """Damps everything except yaw while holding depth."""
+        target_depth = (target_depth if target_depth is not None
+                        else self.target_depth)
+
+        h_rad    = math.radians(sensors.heading)
+        cos_h, sin_h = math.cos(h_rad), math.sin(h_rad)
+
+        surge = (-sensors.velocity_x * cos_h
+                 - sensors.velocity_y * sin_h) * self.DAMPING_GAIN
+        sway  = ( sensors.velocity_x * sin_h
+                 - sensors.velocity_y * cos_h) * self.DAMPING_GAIN
+
+        heave, pitch = self.get_depth_pitch_commands(sensors, target_depth)
+
+        return self._mix_and_normalize_commands(surge, sway, 0.0, heave, pitch)
+
+    def get_heading_commands(self,
+                             sensors: SensorSuite,
+                             heading: float,
+                             surge_power: float = 0.0,
+                             sway_power: float = 0.0,
+                             target_depth: Optional[float] = None,
+                             target_pitch: float = 0.0
+                             ) -> ThrusterCommands:
+        """Holds heading and depth, applies optional surge/sway power."""
+        target_depth = (target_depth if target_depth is not None
+                        else self.target_depth)
+
+        h_rad    = math.radians(sensors.heading)
+        cos_h, sin_h = math.cos(h_rad), math.sin(h_rad)
+
+        yaw_err = angle_diff(heading, sensors.heading)
+        yaw = np.clip(
+            yaw_err              * self.HOVER_YAW_P_GAIN
+            - sensors.imu.gyro_z * self.YAW_D_GAIN,
+            -1.0, 1.0
+        )
+
+        # Damp sway velocity while allowing commanded sway power
+        sway_vel  = -sensors.velocity_x * sin_h + sensors.velocity_y * cos_h
+        sway      = np.clip(
+            sway_power - sway_vel * self.MANEUVER_DAMPING_GAIN,
+            -1.0, 1.0
+        )
+
+        heave, pitch = self.get_depth_pitch_commands(sensors, target_depth,
+                                                     target_pitch)
+
+        return self._mix_and_normalize_commands(surge_power, sway, yaw,
+                                                heave, pitch)
+
+    def get_go_to_visual_target_commands(self,
+                                         sensors: SensorSuite,
+                                         nav_target_x: float,
+                                         surge_power: float,
+                                         target_depth: Optional[float] = None
+                                         ) -> ThrusterCommands:
+        """
+        Holds depth, applies surge, steers yaw toward a visual target.
+
+        nav_target_x: pixel X coordinate of the target in the camera image.
+        """
+        target_depth = (target_depth if target_depth is not None
+                        else self.target_depth)
+
+        # Camera width from the numpy array shape (H, W, C)
+        cam_h, cam_w = sensors.camera_image.shape[:2]
+        pixel_error_x = nav_target_x - cam_w / 2
+
+        yaw = np.clip(
+            -(pixel_error_x / (cam_w / 2)) * self.ALIGN_YAW_P_GAIN
+            - sensors.imu.gyro_z           * self.YAW_D_GAIN,
+            -1.0, 1.0
+        )
+
+        h_rad    = math.radians(sensors.heading)
+        sway_vel = (-sensors.velocity_x * math.sin(h_rad)
+                    + sensors.velocity_y * math.cos(h_rad))
+        sway     = np.clip(-sway_vel * self.MANEUVER_DAMPING_GAIN, -0.5, 0.5)
+
+        heave, pitch = self.get_depth_pitch_commands(sensors, target_depth)
+
+        return self._mix_and_normalize_commands(surge_power, sway, yaw,
+                                                heave, pitch)
+
+    def _mix_and_normalize_commands(self,
+                                    surge: float,
+                                    sway: float,
+                                    yaw: float,
+                                    heave: float,
+                                    pitch: float
+                                    ) -> ThrusterCommands:
+        """
+        Mixes 5-axis commands into 6 thruster commands and normalizes
+        so no thruster exceeds ±1.0.
+        """
+        cos_45 = 0.7071
+        s = surge * cos_45
+        w = sway  * cos_45
+
+        cmds = ThrusterCommands(
+            hfl =  s + w + yaw,
+            hfr =  s - w - yaw,
+            hal =  s - w + yaw,
+            har =  s + w - yaw,
+            vf  = heave + pitch,
+            vr  = heave - pitch,
+        )
+
+        # Normalize horizontal and vertical independently so yaw/surge/sway
+        # corrections never steal authority from the depth controller.
+        h_max = max(1.0, abs(cmds.hfl), abs(cmds.hfr),
+                         abs(cmds.hal), abs(cmds.har))
+        v_max = max(1.0, abs(cmds.vf), abs(cmds.vr))
+
+        if h_max > 1.0:
+            cmds.hfl /= h_max
+            cmds.hfr /= h_max
+            cmds.hal /= h_max
+            cmds.har /= h_max
+
+        if v_max > 1.0:
+            cmds.vf /= v_max
+            cmds.vr /= v_max
+
+        return cmds

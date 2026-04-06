@@ -1,0 +1,22 @@
+services:
+
+  robosub:
+    build: .
+    image: robosub:latest
+    ports:
+      - "5900:5900"
+    volumes:
+      # Mount source so Python edits on the host take effect immediately
+      # (works because of --symlink-install; no rebuild needed)
+      - ./src:/robosub_ws/src
+    stdin_open: true
+    tty: true
+
+  # Drop into a bash shell instead of launching nodes
+  # Usage: docker compose --profile shell run shell
+  shell:
+    extends:
+      service: robosub
+    command: bash
+    ports: []
+    profiles: [shell]
