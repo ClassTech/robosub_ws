@@ -216,25 +216,29 @@ class SubmarineSimulator:
 
         if self.prequal_marker:
              m = self.prequal_marker
-             # Project top and bottom points
-             tp = self.project3D((m.x, m.y, m.z_top))
-             bp = self.project3D((m.x, m.y, m.z_bottom))
+             # Compute the silhouette tangent: perpendicular to the viewing
+             # direction in XY so the cylinder outline is correct from any angle.
+             dx = m.x - self.subPhysics.x
+             dy = m.y - self.subPhysics.y
+             dist_xy = math.hypot(dx, dy)
+             if dist_xy > 0.01:
+                 perp_x = -dy / dist_xy
+                 perp_y =  dx / dist_xy
+             else:
+                 perp_x, perp_y = 0.0, 1.0
 
-             # --- Calculate apparent width ---
-             apparent_width_px = 8 # Default width
-             # Project left/right edges at the sub's current depth for width calculation
-             # (Using sub's Z might be more stable than using marker Z, especially if pole is tall)
-             proj_z = self.subPhysics.z
-             left_edge_pt = self.project3D((m.x, m.y - m.radius, proj_z))
-             right_edge_pt = self.project3D((m.x, m.y + m.radius, proj_z))
-             if left_edge_pt and right_edge_pt:
-                 apparent_width_px = max(1, int(abs(right_edge_pt[0] - left_edge_pt[0])))
-             # ---
+             tl = self.project3D((m.x + m.radius * perp_x, m.y + m.radius * perp_y, m.z_top))
+             tr = self.project3D((m.x - m.radius * perp_x, m.y - m.radius * perp_y, m.z_top))
+             bl = self.project3D((m.x + m.radius * perp_x, m.y + m.radius * perp_y, m.z_bottom))
+             br = self.project3D((m.x - m.radius * perp_x, m.y - m.radius * perp_y, m.z_bottom))
 
-             # Draw the line using calculated width
-             if tp and bp:
-                 avg_dist = (tp[2] + bp[2]) / 2
-                 drawable.append((avg_dist, 'line', m.color, tp[:2], bp[:2], apparent_width_px))
+             if tl and tr and bl and br:
+                 avg_dist = (tl[2] + tr[2] + bl[2] + br[2]) / 4
+                 poly = [tl[:2], tr[:2], br[:2], bl[:2]]
+                 drawable.append((avg_dist, 'polygon', m.color, poly, 0))
+             elif tl and bl:
+                 avg_dist = (tl[2] + bl[2]) / 2
+                 drawable.append((avg_dist, 'line', m.color, tl[:2], bl[:2], 4))
 
         drawable.sort(key=lambda x: x[0], reverse=True)
         for d in drawable:

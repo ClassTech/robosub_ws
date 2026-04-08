@@ -29,15 +29,16 @@ class OrbitTurnTask(Task):
                  target_depth: float = 1.0,
                  approach_height_px: int = 120, # Reduced approach height
                  orbit_target_fraction: float = 0.5, # Keep pole centered during orbit
-                 orbit_sway_power: float = -0.1,     # Slow sway left
+                 orbit_sway_power: float = -0.15,    # Sway left
                  orbit_yaw_gain: float = 2.5,
                  # --- NEW Width Parameters ---
-                 orbit_target_width_px: int = 50,  # Target width during orbit (NEEDS TUNING)
-                 orbit_width_p_gain: float = 0.05, # Gain for width error -> surge (NEEDS TUNING)
+                 orbit_target_width_fraction: float = 0.06,  # Target width as fraction of image width
+                 orbit_width_p_gain: float = 0.03, # Gain for width error -> surge
                  orbit_width_i_gain: float = 0.01, # (NEEDS TUNING)
                  orbit_width_d_gain: float = 0.05, # (NEEDS TUNING)
                  orbit_width_i_clamp: float = 0.3, # (NEEDS TUNING)
                  # ---
+                 min_orbit_time: float = 5.0,        # Min seconds before orbit can complete
                  final_sway_power: float = -0.3):    # Sway power for final move
 
         self.target_depth = target_depth
@@ -75,12 +76,12 @@ class OrbitTurnTask(Task):
                 sway_power=orbit_sway_power,
                 yaw_gain=orbit_yaw_gain,
                 # --- Pass WIDTH parameters ---
-                target_pole_width_px=orbit_target_width_px,
+                target_pole_width_fraction=orbit_target_width_fraction,
                 orbit_width_p_gain=orbit_width_p_gain,
                 orbit_width_i_gain=orbit_width_i_gain,
                 orbit_width_d_gain=orbit_width_d_gain,
-                orbit_width_i_clamp=orbit_width_i_clamp
-                # ---
+                orbit_width_i_clamp=orbit_width_i_clamp,
+                min_orbit_time=min_orbit_time,
             ),
 
             # 6. Stabilize after orbit completes

@@ -100,20 +100,22 @@ class DynamicOrbitPole(Subtask):
                  sway_power: float = -0.3,
                  yaw_gain: float = 1.5,
                  # --- CHANGED to WIDTH ---
-                 target_pole_width_px: int = 40, # Target apparent width for distance
+                 target_pole_width_fraction: float = 0.12, # Target width as fraction of image width
                  orbit_width_p_gain: float = 0.05, # P gain for width error -> surge (NEEDS TUNING)
                  orbit_width_i_gain: float = 0.01, # I gain (NEEDS TUNING)
                  orbit_width_d_gain: float = 0.05, # D gain (NEEDS TUNING)
                  orbit_width_i_clamp: float = 0.3, # Max integral contribution
                  # ---
                  lost_timeout: float = 3.0,
-                 local_search_yaw: float = -0.2):
+                 local_search_yaw: float = -0.2,
+                 min_orbit_time: float = 5.0):
 
         self.target_x_fraction = target_x_fraction
         self.sway_power = sway_power
         self.yaw_gain = yaw_gain
+        self.min_orbit_time = min_orbit_time
         # Width PID parameters
-        self.target_pole_width_px = target_pole_width_px
+        self.target_pole_width_fraction = target_pole_width_fraction
         self.width_p_gain = orbit_width_p_gain
         self.width_i_gain = orbit_width_i_gain
         self.width_d_gain = orbit_width_d_gain
@@ -123,6 +125,7 @@ class DynamicOrbitPole(Subtask):
         self.local_search_yaw = local_search_yaw
         self.target_depth: float = 0.1
         self.time_since_target_lost = 0.0
+        self.orbit_time = 0.0         # Time spent actively orbiting
         self.integral_width_err = 0.0 # Width integral term
         self.last_width_error = 0.0   # For D term calculation
 
@@ -135,11 +138,12 @@ class DynamicOrbitPole(Subtask):
         pole_blob = vision_data.get_best_pole()
         if pole_blob:
             current_width = pole_blob['width']
-            self.last_width_error = self.target_pole_width_px - current_width
+            self.last_width_error = 0.0  # will be computed properly in execute()
         else:
-             self.last_width_error = 0.0 # Assume no error if not visible yet
+            self.last_width_error = 0.0
 
-        print(f"INFO: DynamicOrbitPole starting. Target X: {self.target_x_fraction*100:.0f}%, Sway: {self.sway_power}, Target Width: {self.target_pole_width_px}px")
+        self.orbit_time = 0.0
+        print(f"INFO: DynamicOrbitPole starting. Target X: {self.target_x_fraction*100:.0f}%, Sway: {self.sway_power}, Target Width: {self.target_pole_width_fraction*100:.1f}% of image, Min orbit time: {self.min_orbit_time:.1f}s")
 
     def execute(self, sub: 'Submarine', dt: float, sensors: SensorSuite, vision_data: Vision, config: SimulationConfig, context: Dict[str, Any]) -> Tuple[SubtaskStatus, ThrusterCommands]:
         pole_visible = vision_data.is_pole_visible()
@@ -150,12 +154,17 @@ class DynamicOrbitPole(Subtask):
 
         cam_w = sensors.camera_image.shape[1]
         target_pole_x_px = cam_w * self.target_x_fraction
+        target_width_px = cam_w * self.target_pole_width_fraction
 
         # --- Completion Check: Gate Visible AND Gate Right of Pole? ---
         gate_right_of_pole = False
         gate_center_x = vision_data.get_gate_center_x()
         if gate_visible and pole_visible and gate_center_x is not None and pole_center_x is not None:
             gate_right_of_pole = (gate_center_x > pole_center_x)
+
+        # Require minimum orbit time before completing to prevent immediate exit
+        if gate_visible and pole_visible and gate_right_of_pole and self.orbit_time < self.min_orbit_time:
+            gate_right_of_pole = False  # keep orbiting
 
         # Require gate visibility AND it being right of the pole
         if gate_visible and pole_visible and gate_right_of_pole:
@@ -166,18 +175,18 @@ class DynamicOrbitPole(Subtask):
         if pole_visible and pole_center_x is not None:
             # --- Pole is visible: Execute Orbit Control ---
             self.time_since_target_lost = 0.0
+            self.orbit_time += dt
 
-            # Yaw P-D Controller (to keep pole at target_x_fraction)
             pixel_error_x = pole_center_x - target_pole_x_px
-            yaw_p = -(pixel_error_x / (cam_w / 2)) * self.yaw_gain
-            yaw_d = -sensors.imu.gyro_z * sub.YAW_D_GAIN
-            yaw_cmd = np.clip(yaw_p + yaw_d, -1.0, 1.0)
+            yaw_cmd = float(np.clip(
+                -(pixel_error_x / (cam_w / 2)) * self.yaw_gain - sensors.imu.gyro_z * sub.YAW_D_GAIN,
+                -1.0, 1.0
+            ))
 
-            # Constant Sway Power
             sway_cmd = self.sway_power
 
-            # --- NEW: Surge PID Controller based on WIDTH ---
-            width_error = self.target_pole_width_px - current_width
+            # --- Surge PID Controller based on WIDTH ---
+            width_error = target_width_px - current_width
             # Update integral term
             self.integral_width_err += width_error * dt
             self.integral_width_err = np.clip(self.integral_width_err, -self.width_i_clamp, self.width_i_clamp)
@@ -273,13 +282,9 @@ class SwayUntilTargetLost(Subtask):
                                                 target_depth=self.target_depth)
             return SubtaskStatus.RUNNING, commands
         else:
-            if self.target_was_visible:
-                print(f"INFO: SwayUntilTargetLost complete. Target '{self.target_type}' lost.")
-                context['initial_heading'] = sensors.heading
-                return SubtaskStatus.COMPLETED, sub._get_damping_commands(sensors)
-            else:
-                print(f"ERROR: SwayUntilTargetLost failed. Target '{self.target_type}' never visible.")
-                return SubtaskStatus.FAILED, sub._get_damping_commands(sensors)
+            print(f"INFO: SwayUntilTargetLost complete. Target '{self.target_type}' lost.")
+            context['initial_heading'] = sensors.heading
+            return SubtaskStatus.COMPLETED, sub._get_damping_commands(sensors)
 
     def get_dynamic_name(self, context: Dict[str, Any]) -> str:
         return f"{self.name}({self.sway_power:+.1f})"
@@ -393,8 +398,10 @@ class AlignToObjectX(Subtask):
         if current_center_x is None: return SubtaskStatus.RUNNING, sub.get_spin_damping_commands(sensors, self.target_depth)
         cam_w = sensors.camera_image.shape[1]; target_pixel_x = cam_w * self.target_x_fraction
         pixel_error_x = current_center_x - target_pixel_x
-        yaw_p = -(pixel_error_x / (cam_w / 2)) * self.yaw_gain; yaw_d = -sensors.imu.gyro_z * sub.YAW_D_GAIN
-        yaw = np.clip(yaw_p + yaw_d, -1.0, 1.0)
+        yaw = float(np.clip(
+            -(pixel_error_x / (cam_w / 2)) * self.yaw_gain - sensors.imu.gyro_z * sub.YAW_D_GAIN,
+            -1.0, 1.0
+        ))
         is_centered = abs(pixel_error_x) < self.tolerance_px; is_stable = abs(sensors.imu.gyro_z) < self.yaw_rate_tolerance
         if is_centered and is_stable: context['initial_heading'] = sensors.heading; return SubtaskStatus.COMPLETED, sub._get_damping_commands(sensors)
         heave, pitch = sub.get_depth_pitch_commands(sensors, self.target_depth, 0.0)
@@ -417,8 +424,10 @@ class ApproachAndCenterObject(Subtask):
             height_error = self.height_threshold - target_height; surge = height_error * self.surge_p_gain; surge = np.clip(surge, -0.4, 0.5)
             cam_w = sensors.camera_image.shape[1]; target_pixel_x = cam_w * self.target_x_fraction
             pixel_error_x = target_center_x - target_pixel_x
-            yaw_p = -(pixel_error_x / (cam_w / 2)) * self.yaw_gain; yaw_d = -sensors.imu.gyro_z * sub.YAW_D_GAIN
-            yaw = np.clip(yaw_p + yaw_d, -1.0, 1.0)
+            yaw = float(np.clip(
+                -(pixel_error_x / (cam_w / 2)) * self.yaw_gain - sensors.imu.gyro_z * sub.YAW_D_GAIN,
+                -1.0, 1.0
+            ))
             heave, pitch = sub.get_depth_pitch_commands(sensors, self.target_depth, 0.0)
             is_at_dist = abs(height_error) < self.height_tolerance; is_aligned = abs(pixel_error_x) < self.align_tolerance_px
             if is_at_dist and is_aligned: print("INFO: Approach complete."); context['initial_heading'] = sensors.heading; return SubtaskStatus.COMPLETED, sub._get_damping_commands(sensors)

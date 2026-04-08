@@ -7,7 +7,9 @@ No pygame, no ROS — pure Python/numpy. Receives a SensorSuite each tick,
 returns ThrusterCommands.
 """
 import math
+import os
 import numpy as np
+import yaml
 from typing import Tuple, List, Optional
 
 from robosub.sub.data_structures import ThrusterCommands, SensorSuite, Vision
@@ -15,32 +17,76 @@ from robosub.sub.config import SimulationConfig
 from robosub.sub.utils import angle_diff
 from robosub.sub.tasks.task_base import Task, TaskStatus
 
+# Default gains — overridden by pid_params.yaml when present.
+# Structured to match future ROS parameter names (snake_case).
+_DEFAULT_PID = {
+    # Cascade yaw architecture:
+    #   outer P: error → desired angular rate (rad/s)
+    #   inner P: rate error → thrust command  (this is what YAW_D_GAIN now does)
+    #   max_yaw_rate: caps the desired rate so D always has headroom
+    'align_yaw_p_gain':      0.4,   # normalised pixel error → yaw command
+    'hover_yaw_p_gain':      0.02,  # degrees of heading error → yaw command
+    'yaw_d_gain':            3.0,   # gyro_z (rad/s) → opposing yaw command
+    'damping_gain':          1.5,
+    'maneuver_damping_gain': 3.0,
+    'depth_p_gain':          2.5,
+    'depth_i_gain':          0.15,
+    'depth_d_gain':          4.0,
+    'pitch_p_gain':          0.8,
+    'pitch_d_gain':          1.0,
+    'integral_clamp_z':      4.0,
+    'min_pixels_for_detection': 20,
+    'min_gate_pixels':       50,
+}
+
+# submarine.py lives at:  src/robosub/robosub/sub/submarine.py
+# pid_params.yaml lives at: src/robosub/config/pid_params.yaml
+# So go up 2 levels from robosub/sub/ to reach src/robosub/, then into config/.
+_CONFIG_FILE = os.path.join(
+    os.path.dirname(__file__),   # …/robosub/sub/
+    '..', '..',                  # …/robosub/  (the ROS2 package root)
+    'config', 'pid_params.yaml'
+)
+
+
+def _load_pid_params() -> dict:
+    """Load gains from YAML, falling back to defaults for any missing key."""
+    params = dict(_DEFAULT_PID)
+    path = os.path.normpath(_CONFIG_FILE)
+    if os.path.isfile(path):
+        with open(path) as f:
+            overrides = yaml.safe_load(f) or {}
+        params.update({k: v for k, v in overrides.items() if k in params})
+        print(f"INFO: PID params loaded from {path}")
+    else:
+        print(f"WARN: pid_params.yaml not found at {path}, using built-in defaults")
+    return params
+
 
 class Submarine:
     def __init__(self, mission_plan: List[Task]):
 
+        p = _load_pid_params()
+
         # --- Horizontal gains ---
-        self.ALIGN_YAW_P_GAIN       = 0.4
-        self.YAW_D_GAIN             = 2.0
-        self.HOVER_YAW_P_GAIN       = 0.15
-        self.DAMPING_GAIN           = 1.5
-        self.MANEUVER_DAMPING_GAIN  = 3.0
+        self.ALIGN_YAW_P_GAIN       = p['align_yaw_p_gain']
+        self.HOVER_YAW_P_GAIN       = p['hover_yaw_p_gain']
+        self.YAW_D_GAIN             = p['yaw_d_gain']
+        self.DAMPING_GAIN           = p['damping_gain']
+        self.MANEUVER_DAMPING_GAIN  = p['maneuver_damping_gain']
 
         # --- Vertical (depth/pitch) gains ---
-        self.DEPTH_P_GAIN  = 2.5
-        self.DEPTH_I_GAIN  = 0.15   # slow wind-up to avoid integral overshoot
-        self.DEPTH_D_GAIN  = 4.0    # strong damping on velocity
-        self.PITCH_P_GAIN  = 0.8
-        self.PITCH_D_GAIN  = 1.0
+        self.DEPTH_P_GAIN  = p['depth_p_gain']
+        self.DEPTH_I_GAIN  = p['depth_i_gain']
+        self.DEPTH_D_GAIN  = p['depth_d_gain']
+        self.PITCH_P_GAIN  = p['pitch_p_gain']
+        self.PITCH_D_GAIN  = p['pitch_d_gain']
 
         # --- Depth integrator ---
         self.integral_z_err    = 0.0
-        # Clamp = buoyancy_offset / I_GAIN = 0.6 / 0.15 = 4.0
-        # Keeps steady-state integral just large enough to hold against buoyancy
-        # without having excess that causes overshoot.
-        self.integral_clamp_z  = 4.0
+        self.integral_clamp_z  = p['integral_clamp_z']
 
-        self.MIN_PIXELS_FOR_DETECTION = 20
+        self.MIN_PIXELS_FOR_DETECTION = int(p['min_pixels_for_detection'])
 
         self.mission_plan = mission_plan
         self.config       = SimulationConfig()
@@ -51,7 +97,7 @@ class Submarine:
             image_provider=lambda: (self._latest_sensors.camera_image
                                     if self._latest_sensors else None),
             min_pole_pixels=self.MIN_PIXELS_FOR_DETECTION,
-            min_gate_pixels=50
+            min_gate_pixels=int(p['min_gate_pixels'])
         )
 
         self.reset()
@@ -218,22 +264,20 @@ class Submarine:
         cos_h, sin_h = math.cos(h_rad), math.sin(h_rad)
 
         yaw_err = angle_diff(heading, sensors.heading)
-        yaw = np.clip(
-            yaw_err              * self.HOVER_YAW_P_GAIN
-            - sensors.imu.gyro_z * self.YAW_D_GAIN,
+        yaw = float(np.clip(
+            yaw_err * self.HOVER_YAW_P_GAIN - sensors.imu.gyro_z * self.YAW_D_GAIN,
             -1.0, 1.0
-        )
+        ))
 
         # Damp sway velocity while allowing commanded sway power
-        sway_vel  = -sensors.velocity_x * sin_h + sensors.velocity_y * cos_h
-        sway      = np.clip(
+        sway_vel = -sensors.velocity_x * sin_h + sensors.velocity_y * cos_h
+        sway     = np.clip(
             sway_power - sway_vel * self.MANEUVER_DAMPING_GAIN,
             -1.0, 1.0
         )
 
         heave, pitch = self.get_depth_pitch_commands(sensors, target_depth,
                                                      target_pitch)
-
         return self._mix_and_normalize_commands(surge_power, sway, yaw,
                                                 heave, pitch)
 
@@ -251,15 +295,14 @@ class Submarine:
         target_depth = (target_depth if target_depth is not None
                         else self.target_depth)
 
-        # Camera width from the numpy array shape (H, W, C)
         cam_h, cam_w = sensors.camera_image.shape[:2]
         pixel_error_x = nav_target_x - cam_w / 2
 
-        yaw = np.clip(
+        yaw = float(np.clip(
             -(pixel_error_x / (cam_w / 2)) * self.ALIGN_YAW_P_GAIN
-            - sensors.imu.gyro_z           * self.YAW_D_GAIN,
+            - sensors.imu.gyro_z * self.YAW_D_GAIN,
             -1.0, 1.0
-        )
+        ))
 
         h_rad    = math.radians(sensors.heading)
         sway_vel = (-sensors.velocity_x * math.sin(h_rad)
@@ -267,7 +310,6 @@ class Submarine:
         sway     = np.clip(-sway_vel * self.MANEUVER_DAMPING_GAIN, -0.5, 0.5)
 
         heave, pitch = self.get_depth_pitch_commands(sensors, target_depth)
-
         return self._mix_and_normalize_commands(surge_power, sway, yaw,
                                                 heave, pitch)
 
