@@ -1,29 +1,9 @@
 #!/usr/bin/env python3
-"""
-ROS2 node that wraps the pygame simulator.
-
-Publishes simulated sensor data as ROS2 topics and subscribes to
-thruster commands. Keyboard input (space, r) is forwarded as
-std_msgs/String on /sim/control so the submarine node can react.
-
-Topics published:
-  /camera/image_raw    sensor_msgs/Image       (BGR8, 320x240)
-  /sensors/depth       std_msgs/Float32        (meters)
-  /sensors/heading     std_msgs/Float32        (degrees, 0-360)
-  /sensors/pitch       std_msgs/Float32        (degrees)
-  /sensors/imu         sensor_msgs/Imu
-  /sensors/velocity    geometry_msgs/Twist     (linear x/y/z m/s)
-  /sim/control         std_msgs/String         ("pause"|"resume"|"reset"|"quit")
-
-Topics subscribed:
-  /thruster_commands   std_msgs/Float32MultiArray  ([hfl, hfr, hal, har, vf, vr])
-  /sub/status          std_msgs/String             ("TaskName|state_name")
-"""
 import pygame
 import numpy as np
-
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float32, Float32MultiArray, String
 from sensor_msgs.msg import Image, Imu
 from geometry_msgs.msg import Twist
@@ -32,133 +12,106 @@ from cv_bridge import CvBridge
 from robosub.simulator.simulator import SubmarineSimulator
 from robosub.sub.data_structures import ThrusterCommands
 
-
 class SimulatorNode(Node):
-
     def __init__(self):
         super().__init__('simulator_node')
-
         self._bridge = CvBridge()
         self._commands = ThrusterCommands()
 
+        # Match QoS with SubmarineNode
+        self.qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+
         self._image_pub    = self.create_publisher(Image,             '/camera/image_raw', 10)
-        self._depth_pub    = self.create_publisher(Float32,           '/sensors/depth',    10)
-        self._heading_pub  = self.create_publisher(Float32,           '/sensors/heading',  10)
-        self._pitch_pub    = self.create_publisher(Float32,           '/sensors/pitch',    10)
-        self._imu_pub      = self.create_publisher(Imu,               '/sensors/imu',      10)
-        self._velocity_pub = self.create_publisher(Twist,             '/sensors/velocity', 10)
+        self._depth_pub    = self.create_publisher(Float32,           '/sensors/depth',    self.qos)
+        self._heading_pub  = self.create_publisher(Float32,           '/sensors/heading',  self.qos)
+        self._pitch_pub    = self.create_publisher(Float32,           '/sensors/pitch',    self.qos)
+        self._imu_pub      = self.create_publisher(Imu,               '/sensors/imu',      self.qos)
+        self._velocity_pub = self.create_publisher(Twist,             '/sensors/velocity', self.qos)
         self._ctrl_pub     = self.create_publisher(String,            '/sim/control',      10)
 
-        self.create_subscription(
-            Float32MultiArray, '/thruster_commands', self._thruster_cb, 10)
-        self.create_subscription(
-            String, '/sub/status', self._status_cb, 10)
+        self.create_subscription(Float32MultiArray, '/thruster_commands', self._thruster_cb, self.qos)
+        self.create_subscription(String, '/sub/status', self._status_cb, 10)
 
-        # No submarine AI — commands arrive via /thruster_commands
         self.sim = SubmarineSimulator()
+
+    def _thruster_cb(self, msg: Float32MultiArray):
+        if len(msg.data) == 6:
+            self._commands = ThrusterCommands(
+                hfl=float(msg.data[0]), hfr=float(msg.data[1]),
+                hal=float(msg.data[2]), har=float(msg.data[3]),
+                vf=float(msg.data[4]),  vr=float(msg.data[5])
+            )
 
     def _status_cb(self, msg: String):
         parts = msg.data.split('|', 1)
-        self.sim.ros_task_name  = parts[0]
+        self.sim.ros_task_name = parts[0]
         self.sim.ros_state_name = parts[1] if len(parts) > 1 else ''
 
-    def _thruster_cb(self, msg: Float32MultiArray):
-        d = msg.data
-        if len(d) == 6:
-            self._commands = ThrusterCommands(
-                hfl=float(d[0]), hfr=float(d[1]),
-                hal=float(d[2]), har=float(d[3]),
-                vf=float(d[4]),  vr=float(d[5]),
-            )
-
     def publish_sensors(self):
-        p   = self.sim.subPhysics
+        p = self.sim.subPhysics
         imu = self.sim.last_imu_readings
         now = self.get_clock().now().to_msg()
 
-        # Camera — pygame Surface → (H, W, 3) BGR numpy
-        camera_np = np.ascontiguousarray(
-            np.transpose(pygame.surfarray.array3d(self.sim.cameraSurface), (1, 0, 2))[:, :, ::-1]
-        )
-        self._image_pub.publish(
-            self._bridge.cv2_to_imgmsg(camera_np, encoding='bgr8'))
-
+        # Publish sensors with Best Effort QoS
         self._depth_pub.publish(Float32(data=float(p.z)))
         self._heading_pub.publish(Float32(data=float(p.heading)))
         self._pitch_pub.publish(Float32(data=float(p.pitch)))
 
         imu_msg = Imu()
         imu_msg.header.stamp = now
-        imu_msg.angular_velocity.x = 0.0
-        imu_msg.angular_velocity.y = float(imu.gyro_y)
         imu_msg.angular_velocity.z = float(imu.gyro_z)
+        imu_msg.angular_velocity.y = float(imu.gyro_y)
         imu_msg.linear_acceleration.x = float(imu.accel_x)
         imu_msg.linear_acceleration.y = float(imu.accel_y)
         imu_msg.linear_acceleration.z = float(imu.accel_z)
-        # Covariances: -1 means "not provided"
-        imu_msg.orientation_covariance[0]         = -1.0
-        imu_msg.angular_velocity_covariance[0]    = -1.0
-        imu_msg.linear_acceleration_covariance[0] = -1.0
         self._imu_pub.publish(imu_msg)
 
         vel = Twist()
-        vel.linear.x = float(p.velocity_x)
-        vel.linear.y = float(p.velocity_y)
-        vel.linear.z = float(p.velocity_z)
+        vel.linear.x, vel.linear.y, vel.linear.z = float(p.velocity_x), float(p.velocity_y), float(p.velocity_z)
         self._velocity_pub.publish(vel)
 
-    def publish_sim_control(self, command: str):
-        msg = String()
-        msg.data = command
-        self._ctrl_pub.publish(msg)
+        camera_np = np.ascontiguousarray(np.transpose(pygame.surfarray.array3d(self.sim.cameraSurface), (1, 0, 2))[:, :, ::-1])
+        self._image_pub.publish(self._bridge.cv2_to_imgmsg(camera_np, encoding='bgr8'))
 
+    def publish_sim_control(self, command: str):
+        self._ctrl_pub.publish(String(data=command))
 
 def main(args=None):
     rclpy.init(args=args)
     node = SimulatorNode()
-    sim  = node.sim
+    sim = node.sim
     clock = pygame.time.Clock()
 
     try:
         while sim.running and rclpy.ok():
             dt = clock.tick(60) / 1000.0
-            if dt > 0.1:
-                dt = 0.1
-
-            # Drain ROS2 callbacks without blocking the pygame loop
+            if dt > 0.1: dt = 0.1
             rclpy.spin_once(node, timeout_sec=0)
 
-            # Handle pygame input and forward state changes to ROS2
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    sim.running = False
-                    node.publish_sim_control('quit')
+                if event.type == pygame.QUIT: node.publish_sim_control('quit'); sim.running = False
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
                         sim.paused = not sim.paused
                         node.publish_sim_control('pause' if sim.paused else 'resume')
                     elif event.key == pygame.K_r:
-                        sim.resetSimulation()
-                        node.publish_sim_control('reset')
+                        sim.resetSimulation(); node.publish_sim_control('reset')
                     elif event.key == pygame.K_q:
-                        sim.running = False
-                        node.publish_sim_control('quit')
+                        sim.running = False; node.publish_sim_control('quit')
 
-            if sim.paused:
+            if not sim.paused:
+                sim.generateCameraView()
+                sim.applyPhysics(dt, node._commands)
+                sim.lastThrusterCommands = node._commands
+                node.publish_sensors()
                 sim.render()
-                continue
-
-            sim.generateCameraView()
-            sim.applyPhysics(dt, node._commands)
-            sim.lastThrusterCommands = node._commands
-            node.publish_sensors()
-            sim.render()
-
     finally:
         node.destroy_node()
         rclpy.shutdown()
         pygame.quit()
 
-
-if __name__ == '__main__':
-    main()
+if __name__ == '__main__': main()

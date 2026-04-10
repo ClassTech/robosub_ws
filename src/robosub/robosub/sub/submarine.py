@@ -260,18 +260,22 @@ class Submarine:
         target_depth = (target_depth if target_depth is not None
                         else self.target_depth)
 
-        h_rad    = math.radians(sensors.heading)
+        h_rad = math.radians(sensors.heading)
         cos_h, sin_h = math.cos(h_rad), math.sin(h_rad)
 
-        yaw_err = angle_diff(heading, sensors.heading)
+        # FIXED: Convert degree error to radians to match gyro_z (rad/s)
+        yaw_err_deg = angle_diff(heading, sensors.heading)
+        yaw_err_rad = math.radians(yaw_err_deg)
+
+        # PD Calculation now uses consistent units (radians)
         yaw = float(np.clip(
-            yaw_err * self.HOVER_YAW_P_GAIN - sensors.imu.gyro_z * self.YAW_D_GAIN,
+            yaw_err_rad * self.HOVER_YAW_P_GAIN - sensors.imu.gyro_z * self.YAW_D_GAIN,
             -1.0, 1.0
         ))
 
         # Damp sway velocity while allowing commanded sway power
         sway_vel = -sensors.velocity_x * sin_h + sensors.velocity_y * cos_h
-        sway     = np.clip(
+        sway = np.clip(
             sway_power - sway_vel * self.MANEUVER_DAMPING_GAIN,
             -1.0, 1.0
         )
