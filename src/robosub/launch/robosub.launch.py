@@ -16,4 +16,10 @@ def generate_launch_description():
             name='submarine_node',
             output='screen',
         ),
+        Node(
+            package='robosub',
+            executable='recorder_node',
+            name='recorder_node',
+            output='screen',
+        ),
     ])

@@ -74,7 +74,7 @@ class SubmarineNode(Node):
         if msg.data == 'reset': self._sub.reset()
         elif msg.data == 'pause': self._paused = True
         elif msg.data == 'resume': self._paused = False
-        elif msg.data == 'quit': rclpy.shutdown()
+        elif msg.data == 'quit': rclpy.try_shutdown()
 
     def _control_loop(self):
         if self._paused or self._camera_image is None: return
@@ -105,6 +105,6 @@ def main(args=None):
     try: rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 if __name__ == '__main__': main()

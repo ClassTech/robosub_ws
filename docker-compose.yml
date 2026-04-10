@@ -9,6 +9,8 @@ services:
       # Mount source so Python edits on the host take effect immediately
       # (works because of --symlink-install; no rebuild needed)
       - ./src:/robosub_ws/src
+      # Recordings land on the Mac host
+      - /Users/djohnson/robosub_recordings:/root/robosub_recordings
     stdin_open: true
     tty: true
 

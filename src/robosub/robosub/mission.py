@@ -48,7 +48,5 @@ def create_mission():
         return_gate,
         StabilizeTask(duration=2.0, target_depth=MISSION_DEPTH),
 
-        # Surface
-        StabilizeTask(duration=10.0, target_depth=SURFACE_DEPTH),
         ShutdownTask(),
     ]

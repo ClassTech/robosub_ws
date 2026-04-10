@@ -187,7 +187,7 @@ class SubmarineSimulator:
              bg_w,bg_h = self.camera_background.get_size()
              x_off = (self.subPhysics.heading/360)*bg_w
              y_off = np.clip(((bg_h-h)/2)-(self.subPhysics.pitch*2.0), 0, bg_h-h)
-             self.cameraSurface.blit(self.camera_background_pano, (-x_off, -y_off))
+             self.cameraSurface.blit(self.camera_background_pano, (x_off - bg_w, -y_off))
         else:
              self.cameraSurface.fill(WATER_COLOR)
              hp = self.project3D((self.subPhysics.x+20, self.subPhysics.y, self.config.worldDepth))

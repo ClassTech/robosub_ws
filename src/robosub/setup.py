@@ -28,6 +28,7 @@ setup(
         'console_scripts': [
             'simulator_node = robosub.nodes.simulator_node:main',
             'submarine_node = robosub.nodes.submarine_node:main',
+            'recorder_node  = robosub.nodes.recorder_node:main',
         ],
     },
 )
