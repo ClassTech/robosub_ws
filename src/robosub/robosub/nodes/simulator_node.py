@@ -34,7 +34,8 @@ class SimulatorNode(Node):
         self._ctrl_pub     = self.create_publisher(String,            '/sim/control',      10)
 
         self.create_subscription(Float32MultiArray, '/thruster_commands', self._thruster_cb, self.qos)
-        self.create_subscription(String, '/sub/status', self._status_cb, 10)
+        self.create_subscription(String, '/sub/status',   self._status_cb, 10)
+        self.create_subscription(String, '/sim/control',  self._ctrl_cb,   10)
 
         self.sim = SubmarineSimulator()
 
@@ -50,6 +51,19 @@ class SimulatorNode(Node):
         parts = msg.data.split('|', 1)
         self.sim.ros_task_name = parts[0]
         self.sim.ros_state_name = parts[1] if len(parts) > 1 else ''
+
+    def _ctrl_cb(self, msg: String):
+        cmd = msg.data
+        if cmd == 'pause':
+            self.sim.paused = True
+            self._commands = ThrusterCommands()   # zero thrust while paused
+        elif cmd == 'resume':
+            self.sim.paused = False
+        elif cmd == 'reset':
+            self.sim.resetSimulation()
+            self._commands = ThrusterCommands()
+        elif cmd == 'quit':
+            self.sim.running = False
 
     def publish_sensors(self):
         p = self.sim.subPhysics
@@ -93,15 +107,17 @@ def main(args=None):
             rclpy.spin_once(node, timeout_sec=0)
 
             for event in pygame.event.get():
-                if event.type == pygame.QUIT: node.publish_sim_control('quit'); sim.running = False
+                if event.type == pygame.QUIT:
+                    node.publish_sim_control('quit')
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
-                        sim.paused = not sim.paused
-                        node.publish_sim_control('pause' if sim.paused else 'resume')
+                        node.publish_sim_control('pause' if not sim.paused else 'resume')
+                    elif event.key == pygame.K_s:
+                        node.publish_sim_control('start')
                     elif event.key == pygame.K_r:
-                        sim.resetSimulation(); node.publish_sim_control('reset')
+                        node.publish_sim_control('reset')
                     elif event.key == pygame.K_q:
-                        sim.running = False; node.publish_sim_control('quit')
+                        node.publish_sim_control('quit')
 
             if not sim.paused:
                 sim.generateCameraView()

@@ -289,8 +289,17 @@ class SubmarineSimulator:
                    f" Gyro Z(yaw): {math.degrees(imu.gyro_z): .1f}°/s",
                    f" Gyro Y(pitch): {math.degrees(imu.gyro_y): .1f}°/s"]
         for s in imu_stats: self.screen.blit(self.smallFont.render(s,True,BLACK),(20,y)); y+=18
-        y = self.height - 80; controls=["Controls:", "R - Reset", "SPACE - Pause", "Q - Quit"]
+        y = self.height - 80; controls=["Controls:", "S - Start", "SPACE - Pause/Resume", "R - Reset", "Q - Quit"]
         for c in controls: self.screen.blit(self.smallFont.render(c,True,BLACK),(20,y)); y+=18
+
+        # Prominent WAITING banner
+        if task == 'WAITING':
+            banner = self.font.render("WAITING  —  Press S to Start", True, (255, 200, 0))
+            bx = (self.width - banner.get_width()) // 2
+            by = (self.height - banner.get_height()) // 2
+            pygame.draw.rect(self.screen, (30, 30, 30),
+                             (bx - 10, by - 8, banner.get_width() + 20, banner.get_height() + 16))
+            self.screen.blit(banner, (bx, by))
         tx,ty = self.width-420,350; self.screen.blit(self.smallFont.render("Thruster Output:",True,BLACK),(tx,ty)); ty+=25
         tc=self.lastThrusterCommands
         h_labels=[("HFL",tc.hfl),("HFR",tc.hfr),("HAL",tc.hal),("HAR",tc.har)]

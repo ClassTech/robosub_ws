@@ -18,7 +18,8 @@ class SubmarineNode(Node):
 
         self._bridge = CvBridge()
         self._sub = Submarine(mission_plan=create_mission())
-        self._paused = False
+        self._paused  = False
+        self._started = False   # waits for 'start' command before running mission
 
         # Define Best Effort QoS for low-latency control
         self.qos = QoSProfile(
@@ -71,12 +72,22 @@ class SubmarineNode(Node):
         self._vel_x, self._vel_y, self._vel_z = float(msg.linear.x), float(msg.linear.y), float(msg.linear.z)
 
     def _ctrl_cb(self, msg: String):
-        if msg.data == 'reset': self._sub.reset()
-        elif msg.data == 'pause': self._paused = True
+        if msg.data == 'start':
+            self._started = True
+            self._paused  = False
+        elif msg.data == 'reset':
+            self._sub.reset()
+            self._started = False
+            self._paused  = False
+        elif msg.data == 'pause':  self._paused = True
         elif msg.data == 'resume': self._paused = False
-        elif msg.data == 'quit': rclpy.try_shutdown()
+        elif msg.data == 'quit':   rclpy.try_shutdown()
 
     def _control_loop(self):
+        if not self._started:
+            status = String(data='WAITING|Press Start to begin')
+            self._status_pub.publish(status)
+            return
         if self._paused or self._camera_image is None: return
         now = self.get_clock().now()
         dt = (now - self._last_stamp).nanoseconds / 1e9

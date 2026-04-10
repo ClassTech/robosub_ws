@@ -3,6 +3,7 @@ FROM ros:jazzy-ros-base
 # Install system and ROS2 dependencies
 RUN apt-get update && apt-get install -y \
     python3-pip \
+    python3-flask \
     python3-numpy \
     python3-opencv \
     python3-pygame \
@@ -28,7 +29,7 @@ RUN . /opt/ros/jazzy/setup.sh && \
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 5900
+EXPOSE 5900 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["ros2", "launch", "robosub", "robosub.launch.py"]

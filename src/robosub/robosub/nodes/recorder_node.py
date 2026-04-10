@@ -52,6 +52,8 @@ class RecorderNode(Node):
         self._pitch        = 0.0
         self._gyro_z       = 0.0         # yaw rate rad/s
         self._frame_count  = 0
+        self._started      = False       # don't record until 'start' received
+        self._sensor_count = 0           # counts heading/pitch/imu callbacks received
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -86,6 +88,7 @@ class RecorderNode(Node):
 
     def _heading_cb(self, msg: Float32):
         self._heading = float(msg.data)
+        self._sensor_count += 1
 
     def _pitch_cb(self, msg: Float32):
         self._pitch = float(msg.data)
@@ -94,11 +97,23 @@ class RecorderNode(Node):
         self._gyro_z = float(msg.angular_velocity.z)
 
     def _ctrl_cb(self, msg: String):
-        if msg.data == 'quit':
+        if msg.data == 'start':
+            self._started = True
+        elif msg.data == 'reset':
+            self._close()
+            # Open a fresh file for the new run
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_dir = os.path.dirname(self._out_path)
+            self._out_path = os.path.join(output_dir, f'run_{timestamp}.mp4')
+            self._frame_count = 0
+            self._started = False
+        elif msg.data == 'quit':
             self._close()
             rclpy.try_shutdown()
 
     def _image_cb(self, msg: Image):
+        if not self._started:
+            return
         frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
         if self._scale != 1.0:
@@ -165,9 +180,9 @@ class RecorderNode(Node):
         # Sensor data (below state)
         sensor_lines = [
             f'Depth:   {self._depth:.2f} m',
-            f'Heading: {self._heading:.1f}\xb0',
-            f'Pitch:   {self._pitch:.1f}\xb0',
-            f'YawRate: {math.degrees(self._gyro_z):.1f}\xb0/s',
+            f'Heading: {self._heading:.2f} deg ({self._sensor_count})',
+            f'Pitch:   {self._pitch:.2f} deg',
+            f'YawRate: {math.degrees(self._gyro_z):.2f} deg/s',
         ]
         for i, line in enumerate(sensor_lines):
             self._put(frame, line, m, m + 48 + i * 14, scale=0.35, color=(180, 220, 255))

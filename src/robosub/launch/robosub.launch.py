@@ -22,4 +22,10 @@ def generate_launch_description():
             name='recorder_node',
             output='screen',
         ),
+        Node(
+            package='robosub',
+            executable='web_node',
+            name='web_node',
+            output='screen',
+        ),
     ])
