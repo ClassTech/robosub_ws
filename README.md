@@ -72,6 +72,8 @@ yaw_d_gain:       3.0    # Yaw damping (command per rad/s of gyro_z)
 depth_p_gain:     2.5
 depth_i_gain:     0.15
 depth_d_gain:     4.0
+roll_p_gain:      0.8    # Roll levelling P (command per degree of error)
+roll_d_gain:      1.0    # Roll damping (command per rad/s of gyro_x)
 ```
 
 ---
@@ -136,10 +138,10 @@ Edit `robosub/mission.py`. Task parameters (approach distance, orbit sway power,
 | `/camera/image_raw` | `sensor_msgs/Image` | sim → sub | BGR8 320×240 camera frame |
 | `/sensors/depth` | `std_msgs/Float32` | sim → sub | Depth in meters |
 | `/sensors/heading` | `std_msgs/Float32` | sim → sub | Heading in degrees (0–360) |
-| `/sensors/pitch` | `std_msgs/Float32` | sim → sub | Pitch in degrees |
+| `/sensors/roll` | `std_msgs/Float32` | sim → sub | Roll in degrees (port-down positive) |
 | `/sensors/imu` | `sensor_msgs/Imu` | sim → sub | Angular velocity + linear acceleration |
 | `/sensors/velocity` | `geometry_msgs/Twist` | sim → sub | World-frame velocity (m/s) |
-| `/thruster_commands` | `std_msgs/Float32MultiArray` | sub → sim | `[hfl, hfr, hal, har, vf, vr]` normalized -1..1 |
+| `/thruster_commands` | `std_msgs/Float32MultiArray` | sub → sim | `[hfl, hfr, hal, har, vp, vs]` normalized -1..1 |
 | `/sub/status` | `std_msgs/String` | sub → sim | `"TaskName\|state_name"` for the HUD |
 | `/sim/control` | `std_msgs/String` | sim → sub | `pause`, `resume`, `reset`, `quit` |
 
@@ -156,12 +158,13 @@ Write a new node (`robosub/nodes/hardware_node.py`) that:
 1. **Publishes** all sensor topics listed above from real hardware:
    - `/camera/image_raw` — USB or CSI camera via `cv_bridge`
    - `/sensors/depth` — Bar30 pressure sensor (Blue Robotics) via I2C
-   - `/sensors/heading`, `/sensors/pitch`, `/sensors/imu` — MPU6050 or BNO055 IMU via I2C
+   - `/sensors/heading`, `/sensors/roll`, `/sensors/imu` — MPU6050 or BNO055 IMU via I2C
    - `/sensors/velocity` — Zero (or DVL/optical flow if available; the control stack degrades gracefully without it)
 
 2. **Subscribes** to `/thruster_commands` and drives the ESCs:
-   - Six BlueRobotics T200 thrusters via ESC PWM signals
-   - Map normalized -1..1 to PWM microseconds (1100–1900 µs typical)
+   - Six BlueRobotics T200 thrusters via ESC PWM signals — four horizontal (corners, 45°) and two vertical (port and starboard sides)
+   - Array order: `[hfl, hfr, hal, har, vp, vs]` — map normalized -1..1 to PWM microseconds (1100–1900 µs typical)
+   - `vp` (port) and `vs` (starboard) produce heave when equal; their difference produces roll torque
    - Consider a hardware arming/disarming sequence
 
 3. **Publishes** `/sim/control` if you want hardware kill-switch events to pause the submarine node.

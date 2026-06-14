@@ -28,7 +28,7 @@ class SimulatorNode(Node):
         self._image_pub    = self.create_publisher(Image,             '/camera/image_raw', 10)
         self._depth_pub    = self.create_publisher(Float32,           '/sensors/depth',    self.qos)
         self._heading_pub  = self.create_publisher(Float32,           '/sensors/heading',  self.qos)
-        self._pitch_pub    = self.create_publisher(Float32,           '/sensors/pitch',    self.qos)
+        self._roll_pub     = self.create_publisher(Float32,           '/sensors/roll',     self.qos)
         self._imu_pub      = self.create_publisher(Imu,               '/sensors/imu',      self.qos)
         self._velocity_pub = self.create_publisher(Twist,             '/sensors/velocity', self.qos)
         self._ctrl_pub     = self.create_publisher(String,            '/sim/control',      10)
@@ -44,7 +44,7 @@ class SimulatorNode(Node):
             self._commands = ThrusterCommands(
                 hfl=float(msg.data[0]), hfr=float(msg.data[1]),
                 hal=float(msg.data[2]), har=float(msg.data[3]),
-                vf=float(msg.data[4]),  vr=float(msg.data[5])
+                vp=float(msg.data[4]),  vs=float(msg.data[5])
             )
 
     def _status_cb(self, msg: String):
@@ -73,12 +73,12 @@ class SimulatorNode(Node):
         # Publish sensors with Best Effort QoS
         self._depth_pub.publish(Float32(data=float(p.z)))
         self._heading_pub.publish(Float32(data=float(p.heading)))
-        self._pitch_pub.publish(Float32(data=float(p.pitch)))
+        self._roll_pub.publish(Float32(data=float(p.roll)))
 
         imu_msg = Imu()
         imu_msg.header.stamp = now
         imu_msg.angular_velocity.z = float(imu.gyro_z)
-        imu_msg.angular_velocity.y = float(imu.gyro_y)
+        imu_msg.angular_velocity.x = float(imu.gyro_x)
         imu_msg.linear_acceleration.x = float(imu.accel_x)
         imu_msg.linear_acceleration.y = float(imu.accel_y)
         imu_msg.linear_acceleration.z = float(imu.accel_z)

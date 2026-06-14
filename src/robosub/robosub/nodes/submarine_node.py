@@ -32,7 +32,7 @@ class SubmarineNode(Node):
         self._camera_image = None
         self._depth = 0.0
         self._heading = 0.0
-        self._pitch = 0.0
+        self._roll = 0.0
         self._imu = MPU6050Readings()
         self._vel_x, self._vel_y, self._vel_z = 0.0, 0.0, 0.0
 
@@ -40,7 +40,7 @@ class SubmarineNode(Node):
         self.create_subscription(Image,   '/camera/image_raw', self._image_cb, 10) # Images usually stay reliable/large depth
         self.create_subscription(Float32, '/sensors/depth',    self._depth_cb,   self.qos)
         self.create_subscription(Float32, '/sensors/heading',  self._heading_cb, self.qos)
-        self.create_subscription(Float32, '/sensors/pitch',    self._pitch_cb,   self.qos)
+        self.create_subscription(Float32, '/sensors/roll',     self._roll_cb,    self.qos)
         self.create_subscription(Imu,     '/sensors/imu',      self._imu_cb,     self.qos)
         self.create_subscription(Twist,   '/sensors/velocity', self._vel_cb,     self.qos)
         self.create_subscription(String,  '/sim/control',      self._ctrl_cb,    10)
@@ -56,15 +56,14 @@ class SubmarineNode(Node):
 
     def _depth_cb(self, msg: Float32): self._depth = float(msg.data)
     def _heading_cb(self, msg: Float32): self._heading = float(msg.data)
-    def _pitch_cb(self, msg: Float32): self._pitch = float(msg.data)
+    def _roll_cb(self, msg: Float32): self._roll = float(msg.data)
 
     def _imu_cb(self, msg: Imu):
-        # Use header stamp for better dt synchronization if available
         self._imu = MPU6050Readings(
             accel_x=float(msg.linear_acceleration.x),
             accel_y=float(msg.linear_acceleration.y),
             accel_z=float(msg.linear_acceleration.z),
-            gyro_y=float(msg.angular_velocity.y),
+            gyro_x=float(msg.angular_velocity.x),
             gyro_z=float(msg.angular_velocity.z),
         )
 
@@ -96,15 +95,15 @@ class SubmarineNode(Node):
 
         sensors = SensorSuite(
             camera_image=self._camera_image, depth=self._depth,
-            heading=self._heading, pitch=self._pitch, imu=self._imu,
+            heading=self._heading, roll=self._roll, imu=self._imu,
             velocity_x=self._vel_x, velocity_y=self._vel_y, velocity_z=self._vel_z
         )
 
         commands, _ = self._sub.update(dt, sensors)
-        
+
         out = Float32MultiArray()
-        out.data = [float(commands.hfl), float(commands.hfr), float(commands.hal), 
-                    float(commands.har), float(commands.vf), float(commands.vr)]
+        out.data = [float(commands.hfl), float(commands.hfr), float(commands.hal),
+                    float(commands.har), float(commands.vp), float(commands.vs)]
         self._cmd_pub.publish(out)
 
         status = String(data=f"{self._sub.get_current_task_name()}|{self._sub.get_current_state_name()}")

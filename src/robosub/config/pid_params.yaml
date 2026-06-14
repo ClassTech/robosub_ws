@@ -17,8 +17,8 @@ maneuver_damping_gain: 3.0  # Sway damping during maneuvers
 depth_p_gain: 2.5
 depth_i_gain: 0.15          # Slow wind-up to avoid integral overshoot
 depth_d_gain: 4.0           # Strong damping on velocity
-pitch_p_gain: 0.8
-pitch_d_gain: 1.0
+roll_p_gain: 0.8
+roll_d_gain: 1.0
 
 # --- Depth integrator ---
 integral_clamp_z: 4.0       # = buoyancy_offset / I_GAIN = 0.6 / 0.15

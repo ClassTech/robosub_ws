@@ -49,6 +49,7 @@ class SubmarineSimulator:
         self.subMass = self.config.subMass
         self.subInertia_Z = self.config.subInertia_Z
         self.subInertia_Y = self.config.subInertia_Y
+        self.subInertia_X = self.config.subInertia_X
         self.thrusterMaxForce = self.config.thrusterMaxForce
         self.force_gravity = self.subMass * self.config.gravity
         self.force_buoyancy = self.config.subVolume * self.config.waterDensity * self.config.gravity
@@ -106,19 +107,17 @@ class SubmarineSimulator:
         f_hfr = commands.hfr * self.thrusterMaxForce
         f_hal = commands.hal * self.thrusterMaxForce
         f_har = commands.har * self.thrusterMaxForce
-        f_vf = commands.vf * self.thrusterMaxForce
-        f_vr = commands.vr * self.thrusterMaxForce
+        f_vp = commands.vp * self.thrusterMaxForce
+        f_vs = commands.vs * self.thrusterMaxForce
         cos_45 = 0.7071
         thrust_surge = (f_hfl + f_hfr + f_hal + f_har) * cos_45
         thrust_sway  = (f_hfl - f_hfr - f_hal + f_har) * cos_45
-        thrust_heave = f_vf + f_vr
-        sub_l_half = self.config.submarineLength / 2
-        thrust_yaw = (commands.hfl - commands.hfr + commands.hal - commands.har) * self.thrusterMaxForce
-        thrust_pitch = (f_vf - f_vr) * sub_l_half
+        thrust_heave = f_vp + f_vs
+        sub_w_half = self.config.submarineWidth / 2
+        thrust_yaw  = (commands.hfl - commands.hfr + commands.hal - commands.har) * self.thrusterMaxForce
+        thrust_roll = (f_vp - f_vs) * sub_w_half   # port−starboard differential → roll
         h_rad = math.radians(self.subPhysics.heading)
-        p_rad = math.radians(self.subPhysics.pitch)
         cos_h, sin_h = math.cos(h_rad), math.sin(h_rad)
-        cos_p, sin_p = math.cos(p_rad), math.sin(p_rad)
         vx_w, vy_w, vz_w = self.subPhysics.velocity_x, self.subPhysics.velocity_y, self.subPhysics.velocity_z
         vel_surge = vx_w * cos_h + vy_w * sin_h
         vel_sway  = -vx_w * sin_h + vy_w * cos_h
@@ -127,41 +126,39 @@ class SubmarineSimulator:
         drag_sway  = -self.config.swayDragCoeff * vel_sway * abs(vel_sway)
         drag_heave = -self.config.heaveDragCoeff * vel_heave * abs(vel_heave)
         drag_yaw   = -self.config.angularDragCoeff_Z * self.subPhysics.angular_velocity_z**2 * np.sign(self.subPhysics.angular_velocity_z)
-        drag_pitch = -self.config.angularDragCoeff_Y * self.subPhysics.angular_velocity_y**2 * np.sign(self.subPhysics.angular_velocity_y)
+        drag_roll  = -self.config.angularDragCoeff_X * self.subPhysics.angular_velocity_x**2 * np.sign(self.subPhysics.angular_velocity_x)
         total_force_surge = thrust_surge + drag_surge
         total_force_sway  = thrust_sway + drag_sway
         total_force_heave = thrust_heave + drag_heave
-        total_torque_yaw   = thrust_yaw + drag_yaw
-        total_torque_pitch = thrust_pitch + drag_pitch
-        f_x_pitched = total_force_surge * cos_p - total_force_heave * sin_p
-        f_z_pitched = total_force_surge * sin_p + total_force_heave * cos_p
-        fx = f_x_pitched * cos_h - total_force_sway * sin_h
-        fy = f_x_pitched * sin_h + total_force_sway * cos_h
-        fz = f_z_pitched - self.netBuoyancyForce
+        total_torque_yaw  = thrust_yaw + drag_yaw
+        total_torque_roll = thrust_roll + drag_roll
+        fx = total_force_surge * cos_h - total_force_sway * sin_h
+        fy = total_force_surge * sin_h + total_force_sway * cos_h
+        fz = total_force_heave - self.netBuoyancyForce
         ax = fx / self.subMass
         ay = fy / self.subMass
         az = fz / self.subMass
-        angular_accel_z = total_torque_yaw / self.subInertia_Z
-        angular_accel_y = total_torque_pitch / self.subInertia_Y
+        angular_accel_z = total_torque_yaw  / self.subInertia_Z
+        angular_accel_x = total_torque_roll / self.subInertia_X
         self.subPhysics.velocity_x += ax * dt
         self.subPhysics.velocity_y += ay * dt
         self.subPhysics.velocity_z += az * dt
         self.subPhysics.angular_velocity_z += angular_accel_z * dt
-        self.subPhysics.angular_velocity_y += angular_accel_y * dt
+        self.subPhysics.angular_velocity_x += angular_accel_x * dt
         imu_accel_surge = ax * cos_h + ay * sin_h
         imu_accel_sway = -ax * sin_h + ay * cos_h
         imu_accel_heave = az
         self.last_imu_readings = MPU6050Readings(
             accel_x=imu_accel_sway, accel_y=imu_accel_surge, accel_z=imu_accel_heave,
             gyro_z=self.subPhysics.angular_velocity_z,
-            gyro_y=self.subPhysics.angular_velocity_y
+            gyro_x=self.subPhysics.angular_velocity_x,
         )
         self.subPhysics.x += self.subPhysics.velocity_x * dt
         self.subPhysics.y += self.subPhysics.velocity_y * dt
         self.subPhysics.z += self.subPhysics.velocity_z * dt
         self.subPhysics.heading = (self.subPhysics.heading + math.degrees(self.subPhysics.angular_velocity_z * dt)) % 360
-        self.subPhysics.pitch = (self.subPhysics.pitch + math.degrees(self.subPhysics.angular_velocity_y * dt))
-        self.subPhysics.pitch = np.clip(self.subPhysics.pitch, -90, 90)
+        self.subPhysics.roll = (self.subPhysics.roll + math.degrees(self.subPhysics.angular_velocity_x * dt))
+        self.subPhysics.roll = np.clip(self.subPhysics.roll, -90, 90)
         margin = 0.5
         self.subPhysics.x = np.clip(self.subPhysics.x, margin, self.config.worldWidth - margin)
         self.subPhysics.y = np.clip(self.subPhysics.y, margin, self.config.worldHeight - margin)
@@ -278,7 +275,7 @@ class SubmarineSimulator:
             state = self.ros_state_name
         stats=[f"Time: {time.time()-self.startTime:.1f}s", f"Task: {task}", f"State: {state}",
                f"Speed (XY): {speed:.2f} m/s", f"Vel Z: {self.subPhysics.velocity_z:.2f} m/s",
-               f"Heading: {self.subPhysics.heading:.1f}°", f"Pitch: {self.subPhysics.pitch:.1f}°",
+               f"Heading: {self.subPhysics.heading:.1f}°", f"Roll: {self.subPhysics.roll:.1f}°",
                f"Depth: {self.subPhysics.z:.2f} m"]
         for s in stats: self.screen.blit(self.smallFont.render(s,True,BLACK),(20,y)); y+=20
         y+=10; imu = self.last_imu_readings
@@ -287,7 +284,7 @@ class SubmarineSimulator:
                    f" Accel X(sway): {imu.accel_x: .2f} m/s²",
                    f" Accel Z(heave): {imu.accel_z: .2f} m/s²",
                    f" Gyro Z(yaw): {math.degrees(imu.gyro_z): .1f}°/s",
-                   f" Gyro Y(pitch): {math.degrees(imu.gyro_y): .1f}°/s"]
+                   f" Gyro X(roll): {math.degrees(imu.gyro_x): .1f}°/s"]
         for s in imu_stats: self.screen.blit(self.smallFont.render(s,True,BLACK),(20,y)); y+=18
         y = self.height - 80; controls=["Controls:", "S - Start", "SPACE - Pause/Resume", "R - Reset", "Q - Quit"]
         for c in controls: self.screen.blit(self.smallFont.render(c,True,BLACK),(20,y)); y+=18
@@ -303,7 +300,7 @@ class SubmarineSimulator:
         tx,ty = self.width-420,350; self.screen.blit(self.smallFont.render("Thruster Output:",True,BLACK),(tx,ty)); ty+=25
         tc=self.lastThrusterCommands
         h_labels=[("HFL",tc.hfl),("HFR",tc.hfr),("HAL",tc.hal),("HAR",tc.har)]
-        v_labels=[("VF",tc.vf),("VR",tc.vr)]
+        v_labels=[("VP",tc.vp),("VS",tc.vs)]
         for i,(l,v) in enumerate(h_labels): self._drawThrusterBar(tx+i*40,ty,l,v)
         for i,(l,v) in enumerate(v_labels): self._drawThrusterBar(tx+180+i*40,ty,l,v)
 
@@ -321,7 +318,7 @@ class SubmarineSimulator:
                  np.transpose(pygame.surfarray.array3d(self.cameraSurface), (1, 0, 2))[:, :, ::-1]
              )
              sensors = SensorSuite(camera_image=camera_np, depth=self.subPhysics.z,
-                                   heading=self.subPhysics.heading, pitch=self.subPhysics.pitch,
+                                   heading=self.subPhysics.heading, roll=self.subPhysics.roll,
                                    imu=self.last_imu_readings,
                                    velocity_x=self.subPhysics.velocity_x, velocity_y=self.subPhysics.velocity_y,
                                    velocity_z=self.subPhysics.velocity_z)

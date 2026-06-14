@@ -28,7 +28,8 @@ class MPU6050Readings:
     accel_x: float = 0.0   # Sway acceleration (m/s²)
     accel_y: float = 0.0   # Surge acceleration (m/s²)
     accel_z: float = 0.0   # Heave acceleration (m/s²)
-    gyro_y:  float = 0.0   # Pitch rate (rad/s)
+    gyro_x:  float = 0.0   # Roll rate (rad/s)
+    gyro_y:  float = 0.0   # Pitch rate (rad/s) — measured but not controlled
     gyro_z:  float = 0.0   # Yaw rate (rad/s)
 
 
@@ -49,7 +50,7 @@ class SensorSuite:
     camera_image:   np.ndarray
     depth:          float           # Meters below surface
     heading:        float           # Degrees, 0-360
-    pitch:          float           # Degrees, nose-up positive
+    roll:           float           # Degrees, port-down positive
     imu:            MPU6050Readings
     velocity_x:     float = 0.0    # World-frame X velocity (m/s)
     velocity_y:     float = 0.0    # World-frame Y velocity (m/s)
@@ -181,5 +182,5 @@ class ThrusterCommands:
     hfr: float = 0.0   # Horizontal front-right
     hal: float = 0.0   # Horizontal aft-left
     har: float = 0.0   # Horizontal aft-right
-    vf:  float = 0.0   # Vertical fore
-    vr:  float = 0.0   # Vertical aft
+    vp:  float = 0.0   # Vertical port (left)
+    vs:  float = 0.0   # Vertical starboard (right)

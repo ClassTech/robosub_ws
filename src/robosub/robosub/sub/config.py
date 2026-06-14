@@ -39,7 +39,8 @@ class SimulationConfig:
     # --- NEW 3D Physics Properties ---
     subMass: float = 4.0        # Mass (kg) 
     subInertia_Z: float = 0.35  # Rotational Inertia (Yaw)
-    subInertia_Y: float = 0.35  # Rotational Inertia (Pitch) - ASSUMED, TUNE ME
+    subInertia_Y: float = 0.35  # Rotational Inertia (Pitch) — kept but no longer driven
+    subInertia_X: float = 0.35  # Rotational Inertia (Roll)
     
     thrusterMaxForce: float = 0.8 # Max force per thruster (N)
     
@@ -49,7 +50,8 @@ class SimulationConfig:
     heaveDragCoeff: float = 8.0   # Up/down (Assumed same as sway)
     
     angularDragCoeff_Z: float = 3.0  # Yaw drag
-    angularDragCoeff_Y: float = 3.0  # Pitch drag
+    angularDragCoeff_Y: float = 3.0  # Pitch drag — kept but no longer driven
+    angularDragCoeff_X: float = 3.0  # Roll drag
     
     # Buoyancy
     gravity: float = 9.81

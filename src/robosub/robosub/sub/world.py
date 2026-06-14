@@ -69,9 +69,11 @@ class SubmarinePhysicsState:
     y: float = 0.0
     z: float = 0.0
     heading: float = 0.0
-    pitch: float = 0.0
+    pitch: float = 0.0          # kept for camera projection; no longer driven by thrusters
+    roll: float = 0.0
     velocity_x: float = 0.0
     velocity_y: float = 0.0
     velocity_z: float = 0.0
     angular_velocity_z: float = 0.0
-    angular_velocity_y: float = 0.0
+    angular_velocity_y: float = 0.0  # pitch rate; kept but not driven
+    angular_velocity_x: float = 0.0  # roll rate
